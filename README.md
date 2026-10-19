@@ -7,3 +7,5 @@ El libro de campo contiene la estructura para el registro y organización de los
 
 [Ver libro de campo](https://docs.google.com/spreadsheets/d/1XafwcOa34aGFagsr7NvInyx-XuzE2HOhgL33pb_t4ng/edit?usp=sharing)# Unidad_III_DE
 # Unidad_III_DE
+
+El análisis de los datos está en el archivo: analysis_mielecilla.qmd
