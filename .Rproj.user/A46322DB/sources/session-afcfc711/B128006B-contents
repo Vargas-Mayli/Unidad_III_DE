@@ -1,0 +1,1113 @@
+---
+title: "Efecto de diferentes concentraciones de agua residual del beneficio húmedo de café (Coffea arabica L.) sobre la germinación y crecimiento inicial de rabanito (Raphanus sativus L.) y lechuga (Lactuca sativa L.)"
+subtitle: "Bioensayo · Evaluaciones acumuladas entre los días 0 y 7"
+lang: es
+format:
+  html:
+    theme: cosmo
+    toc: true
+    toc-location: left
+    toc-depth: 3
+    toc-expand: 2
+    number-sections: true
+    code-fold: show
+    code-line-numbers: true
+    code-overflow: wrap
+    embed-resources: true
+execute:
+  echo: true
+  warning: true
+  message: false
+editor_options:
+  chunk_output_type: console
+---
+
+# Diseño y alcance
+
+Este análisis evalúa la respuesta germinativa de **rabanito** (*Raphanus sativus* L.) y **lechuga** (*Lactuca sativa* L.) a seis2 tratamientos de concentraciones de agua residual del beneficio humedo de café. El bioensayo se organizó bajo un diseño completamente al azar, con **dos especies × seis concentraciones × cuatro repeticiones**, **25 semillas por unidad experimental** (48 unidades; 1200 semillas en total).
+
+Se registró la germinación **acumulada** entre los días 0 y 7. La inferencia se desarrolla en el orden **GRP → MGT → GSP → SYN**. Las variables de longitud radicular y de plántula no se analizan en esta versión porque no tienen mediciones registradas en la base revisada. Posteriormente se realiza un análisis multivariado exploratorio (PCA y clúster).
+
+
+# Preparación de los datos
+
+## Paquetes y funciones auxiliares
+
+```{r}
+#| label: paquetes-y-funciones
+
+# 1. Paquetes: importar, analizar y representar los resultados
+library(googlesheets4)
+library(dplyr)
+library(GerminaR)
+library(emmeans)
+library(multcomp)
+library(multcompView)
+library(brglm2)
+library(ggplot2)
+library(patchwork)
+library(knitr)
+library(tidyr)
+library(FactoMineR)
+library(cluster)
+
+# 2. Estadísticos seguros cuando un índice no está definido
+media_segura <- function(x) {
+  if (all(is.na(x))) NA_real_ else mean(x, na.rm = TRUE)
+}
+
+sd_segura <- function(x) {
+  if (sum(!is.na(x)) <= 1L) NA_real_ else sd(x, na.rm = TRUE)
+}
+
+ee_seguro <- function(x) {
+  n <- sum(!is.na(x))
+  if (n <= 1L) NA_real_ else sd(x, na.rm = TRUE) / sqrt(n)
+}
+
+# 3. Niveles y etiquetas para conservar el mismo orden en todo el análisis
+niveles_trat <- c("T0_0", "T1_1.25", "T2_2.5", "T3_5", "T4_10", "T5_100")
+etiquetas_trat <- paste0("T", 0:5)
+
+# Etiquetas visuales; los niveles de la base se mantienen en minúscula.
+etiquetas_especies <- c(rabanito = "Rabanito", lechuga = "Lechuga")
+
+colores_especies <- c(rabanito = "#B35D38", lechuga = "#167C78")
+formas_especies  <- c(rabanito = 16, lechuga = 17)
+```
+
+## Importación desde Google Sheets
+
+La hoja **`fb`** contiene los conteos acumulados; los identificadores se conservan como texto y los tratamientos como factores.
+
+```{r}
+#| label: importar-y-tipificar
+
+url <- paste0(
+  "https://docs.google.com/spreadsheets/d/",
+  "1XafwcOa34aGFagsr7NvInyx-XuzE2HOhgL33pb_t4ng/edit?usp=sharing"
+)
+
+gs <- googlesheets4::as_sheets_id(url)
+
+fb <- googlesheets4::range_read(ss = gs, sheet = "fb") %>%
+  dplyr::mutate(
+    qrcode = as.character(qrcode),
+    plots = as.character(plots),
+    ntreat = factor(ntreat),
+    especies = factor(especies, levels = c("rabanito", "lechuga")),
+    # Orden único de tratamientos definido en el bloque de configuración.
+    concentraciones = factor(concentraciones, levels = niveles_trat),
+    rep = factor(rep),
+    design = factor(design),
+    seed = as.integer(seed),
+    dplyr::across(dplyr::matches("^germ_[0-7]$"), as.integer),
+    dplyr::across(dplyr::matches("^long_(rad|plan)_"), as.numeric)
+  )
+
+# Consultar estructura sin abrir una ventana externa de RStudio
+dplyr::glimpse(fb)
+```
+
+## Control de calidad del experimento
+
+Se comprueba el número de unidades experimentales, la identificación única de las bandejas y la coherencia de los conteos. **El procedimiento no modifica automáticamente ningún registro.**
+
+```{r}
+#| label: control-de-calidad
+
+unidades <- fb %>%
+  dplyr::count(especies, concentraciones, name = "repeticiones")
+
+knitr::kable(unidades, caption = "Número de repeticiones por combinación experimental")
+
+if (nrow(fb) != 48L || nrow(unidades) != 12L ||
+    any(unidades$repeticiones != 4L)) {
+  stop("El número de observaciones no corresponde al diseño 2 × 6 × 4.")
+}
+
+if (anyNA(fb$especies) || anyNA(fb$concentraciones) ||
+    anyDuplicated(fb$plots) > 0L) {
+  stop("Revisar los niveles de los factores o los identificadores 'plots'.")
+}
+
+cols_germ <- paste0("germ_", 0:7)
+mat_germ <- as.matrix(fb[, cols_germ])
+
+if (anyNA(mat_germ) || anyNA(fb$seed)) {
+  stop("Se detectaron datos faltantes en los conteos de germinación.")
+}
+
+if (any(mat_germ < 0) || any(sweep(mat_germ, 1, fb$seed, `>`))) {
+  stop("Existen conteos negativos o superiores a las semillas sembradas.")
+}
+
+incrementos <- mat_germ[, -1, drop = FALSE] -
+  mat_germ[, -ncol(mat_germ), drop = FALSE]
+
+pos_negativas <- which(incrementos < 0, arr.ind = TRUE)
+if (nrow(pos_negativas) > 0L) {
+  stop(
+    "La germinación acumulada disminuye en plots: ",
+    paste(unique(fb$plots[pos_negativas[, "row"]]), collapse = ", ")
+  )
+}
+```
+
+# Cálculo de los índices de germinación
+
+La función `GerminaR::ger_summary()` recibe los conteos acumulados (`cumulative = TRUE`). Se conservan **GRP = 0 %** en unidades sin germinación; MGT, GSP y SYN permanecen como `NA` cuando son matemáticamente indefinidos.
+
+## Índices por unidad experimental
+
+```{r}
+#| label: calcular-indices
+
+fbx <- fb %>%
+  dplyr::select(
+    plots, especies, concentraciones, rep,
+    seed, germ_0:germ_7
+  )
+
+gsmx <- GerminaR::ger_summary(
+  factors = c("plots", "rep", "especies", "concentraciones"),
+  SeedN = "seed",
+  evalName = "germ_",
+  cumulative = TRUE,
+  data = fbx
+)
+
+dt <- gsmx %>%
+  dplyr::select(
+    plots, especies, concentraciones, rep,
+    grp, mgt, gsp, syn
+  ) %>%
+  dplyr::mutate(
+    dplyr::across(c(mgt, gsp, syn),
+                  ~ replace(.x, !is.finite(.x), NA_real_))
+  )
+
+knitr::kable(dt, digits = 3,
+             caption = "GRP, MGT, GSP y SYN por unidad experimental")
+```
+
+## Estadística descriptiva
+
+Se calculan **media, desviación estándar (DE) y error estándar (EE)** a partir de las cuatro unidades experimentales de cada combinación especie × concentración.
+
+```{r}
+#| label: resumen-descriptivo
+
+resumen_germ <- dt %>%
+  dplyr::group_by(especies, concentraciones) %>%
+  dplyr::summarise(
+    dplyr::across(
+      c(grp, mgt, gsp, syn),
+      list(media = ~ media_segura(.x),
+           sd = ~ sd_segura(.x),
+           ee = ~ ee_seguro(.x)),
+      .names = "{.col}_{.fn}"
+    ),
+    .groups = "drop"
+  )
+
+knitr::kable(resumen_germ, digits = 3,
+             caption = "Resumen descriptivo por especie y concentración")
+```
+
+# GRP · Porcentaje final de germinación
+
+El análisis utiliza las **seis concentraciones**, incluido T5 (0 % de germinación). La variable respuesta son los conteos de semillas germinadas y no germinadas en cada unidad experimental.
+
+## Modelo binomial con reducción de sesgo
+
+El modelo logístico utiliza `brglm2` porque hay proporciones observadas de 0 y 1, que pueden provocar estimaciones infinitas con máxima verosimilitud ordinaria.
+
+```{r}
+#| label: grp-modelo-binomial
+
+datos_grp <- fb %>%
+  dplyr::transmute(
+    plots, especies, concentraciones, rep, seed,
+    germinadas = germ_7,
+    no_germinadas = seed - germ_7
+  )
+
+modelo_grp <- glm(
+  cbind(germinadas, no_germinadas) ~ especies * concentraciones,
+  family = binomial(link = "logit"),
+  data = datos_grp,
+  method = brglm2::brglmFit,
+  type = "AS_mean"
+)
+
+summary(modelo_grp)
+```
+
+## Dispersión y efectos factoriales
+
+Se informa la dispersión de Pearson como diagnóstico **orientativo**. Las pruebas de `joint_tests()` son aproximaciones tipo Wald, no pruebas exactas.
+
+```{r}
+#| label: grp-diagnostico-y-efectos
+
+dispersion_grp <- sum(residuals(modelo_grp, type = "pearson")^2) /
+  df.residual(modelo_grp)
+
+cat("Razón de dispersión de Pearson:", round(dispersion_grp, 3), "\n")
+
+pruebas_grp <- emmeans::joint_tests(modelo_grp)
+knitr::kable(as.data.frame(pruebas_grp), digits = 4,
+             caption = "GRP: pruebas conjuntas aproximadas de efectos factoriales")
+```
+
+## Medias estimadas, comparaciones de Tukey y letras
+
+Las comparaciones de concentraciones se realizan **dentro de cada especie** en la escala logit. Se usan las letras para comunicar los contrastes a α = 0,05; las líneas de la figura posterior muestran **porcentajes observados**, no predicciones del modelo.
+
+```{r}
+#| label: grp-tukey-y-letras
+
+# Probabilidades marginales y contrastes dentro de cada especie
+emm_grp <- emmeans::emmeans(modelo_grp, ~ concentraciones | especies)
+tukey_grp <- pairs(emm_grp, adjust = "tukey")
+
+summary(tukey_grp)
+
+# Letras a/b derivadas automáticamente de los contrastes de Tukey
+# reversed = TRUE asigna las primeras letras a las medias más altas.
+letras_grp <- multcomp::cld(
+  emm_grp, Letters = letters, reversed = TRUE
+) %>%
+  as.data.frame() %>%
+  dplyr::transmute(
+    especies, concentraciones,
+    letra = trimws(.group)
+  )
+
+# Observaciones reales y valores previstos por el modelo
+resumen_grp <- datos_grp %>%
+  dplyr::mutate(estimado = 100 * predict(modelo_grp, type = "response")) %>%
+  dplyr::group_by(especies, concentraciones) %>%
+  dplyr::summarise(
+    GRP_observado = 100 * sum(germinadas) / sum(seed),
+    GRP_estimado = mean(estimado),
+    .groups = "drop"
+  ) %>%
+  dplyr::left_join(letras_grp,
+                   by = c("especies", "concentraciones"))
+
+knitr::kable(resumen_grp, digits = 3,
+             caption = "GRP: porcentajes observados, estimados y letras de Tukey")
+```
+
+# MGT · Tiempo medio de germinación
+
+MGT representa el tiempo medio requerido por las semillas que germinaron. **T5 se excluye de este índice** porque no germinó ninguna semilla en ese tratamiento.
+
+## Modelo factorial y supuestos
+
+```{r}
+#| label: mgt-modelo-y-supuestos
+
+datos_modelo <- dt %>%
+  dplyr::filter(concentraciones != "T5_100") %>%
+  droplevels() %>%
+  dplyr::mutate(grupo = interaction(especies, concentraciones))
+
+modelo_mgt <- lm(mgt ~ especies * concentraciones, data = datos_modelo)
+
+cat("Shapiro-Wilk (residuos de MGT):\n")
+print(shapiro.test(residuals(modelo_mgt)))
+
+cat("Fligner-Killeen (MGT entre combinaciones):\n")
+print(fligner.test(mgt ~ grupo, data = datos_modelo))
+```
+
+## ANOVA y comparaciones múltiples
+
+La interacción especie × concentración de MGT es significativa en los datos actuales. Por ello se comparan concentraciones **dentro de cada especie**, además de especies **dentro de cada concentración**.
+
+```{r}
+#| label: mgt-anova-y-tukey
+
+anova_mgt <- anova(modelo_mgt)
+knitr::kable(anova_mgt, digits = 5, caption = "MGT: ANOVA factorial")
+
+emm_mgt <- emmeans::emmeans(modelo_mgt, ~ concentraciones | especies)
+tukey_mgt <- pairs(emm_mgt, adjust = "tukey")
+summary(tukey_mgt)
+
+emm_esp_mgt <- emmeans::emmeans(modelo_mgt, ~ especies | concentraciones)
+comparacion_esp_mgt <- pairs(emm_esp_mgt)
+summary(comparacion_esp_mgt)
+```
+
+## Letras para la figura de MGT
+
+Las **minúsculas** comparan concentraciones dentro de especie (Tukey); las **mayúsculas** comparan las dos especies dentro de la misma concentración (un contraste por concentración).
+
+```{r}
+#| label: mgt-letras
+
+letras_mgt <- multcomp::cld(emm_mgt, Letters = letters) %>%
+  as.data.frame() %>%
+  dplyr::transmute(especies, concentraciones,
+                   media = emmean, EE = SE,
+                   letra = trimws(.group))
+
+letras_esp_mgt <- multcomp::cld(emm_esp_mgt, Letters = LETTERS) %>%
+  as.data.frame() %>%
+  dplyr::transmute(especies, concentraciones,
+                   letra_especie = trimws(.group))
+
+tabla_mgt <- letras_mgt %>%
+  dplyr::left_join(letras_esp_mgt,
+                   by = c("especies", "concentraciones")) %>%
+  dplyr::mutate(etiqueta = paste0(letra, letra_especie)) %>%
+  dplyr::arrange(especies, concentraciones)
+
+knitr::kable(tabla_mgt, digits = 3,
+             caption = "MGT: medias marginales, EE y grupos de significancia")
+```
+
+# GSP · Velocidad de germinación
+
+GSP es una transformación del tiempo medio (`100/MGT`), por lo que **MGT y GSP no constituyen respuestas estadísticamente independientes**. En los datos actuales, la interacción especie × concentración no fue significativa, por lo que las comparaciones de tratamientos se fundamentan en un modelo aditivo.
+
+## Modelo factorial inicial
+
+```{r}
+#| label: gsp-modelo-factorial
+
+modelo_gsp <- lm(gsp ~ especies * concentraciones, data = datos_modelo)
+
+knitr::kable(anova(modelo_gsp), digits = 5,
+             caption = "GSP: ANOVA del modelo factorial inicial")
+```
+
+## Modelo aditivo y diagnóstico
+
+El ajuste aditivo resume por separado los efectos de especie y concentración. Debe revisarse nuevamente si cambia el conjunto de datos.
+
+```{r}
+#| label: gsp-modelo-aditivo
+
+modelo_gsp_aditivo <- lm(
+  gsp ~ especies + concentraciones,
+  data = datos_modelo
+)
+
+knitr::kable(anova(modelo_gsp_aditivo), digits = 5,
+             caption = "GSP: ANOVA del modelo aditivo")
+
+cat("Shapiro-Wilk (residuos de GSP, modelo aditivo):\n")
+print(shapiro.test(residuals(modelo_gsp_aditivo)))
+
+cat("Fligner-Killeen (GSP entre combinaciones):\n")
+print(fligner.test(gsp ~ grupo, data = datos_modelo))
+```
+
+## Tukey y letras marginales de GSP
+
+Para GSP, el ANOVA factorial inicial no detectó interacción especie × concentración (p = 0,195). Por tanto, se utiliza el modelo **aditivo**. Las **letras minúsculas** comparan concentraciones promediadas entre especies, y las **mayúsculas** comparan especies promediadas entre concentraciones. Se combinan ambas letras sobre **cada punto de las dos curvas** únicamente como representación de los dos efectos principales: **no son comparaciones independientes en cada combinación especie × tratamiento**.
+
+```{r}
+#| label: gsp-tukey-y-letras
+
+emm_gsp_conc <- emmeans::emmeans(modelo_gsp_aditivo, ~ concentraciones)
+tukey_gsp <- pairs(emm_gsp_conc, adjust = "tukey")
+summary(tukey_gsp)
+
+emm_gsp_esp <- emmeans::emmeans(modelo_gsp_aditivo, ~ especies)
+comparacion_gsp_esp <- pairs(emm_gsp_esp)
+summary(comparacion_gsp_esp)
+
+# Minúsculas: concentraciones (efecto principal, promediado entre especies).
+letras_gsp_conc <- multcomp::cld(
+  emm_gsp_conc, Letters = letters
+) %>%
+  as.data.frame() %>%
+  dplyr::transmute(
+    concentraciones,
+    letra_conc = trimws(.group)
+  )
+
+# Mayúsculas: especies (efecto principal, promediado entre T0–T4).
+# 'reversed = TRUE' da A a la especie con mayor GSP.
+letras_gsp_esp <- multcomp::cld(
+  emm_gsp_esp, Letters = LETTERS, reversed = TRUE
+) %>%
+  as.data.frame() %>%
+  dplyr::transmute(
+    especies,
+    letra_esp = trimws(.group)
+  )
+
+# Medias marginales y letras, para la tabla estadística.
+tabla_gsp_conc <- as.data.frame(emm_gsp_conc) %>%
+  dplyr::left_join(letras_gsp_conc, by = "concentraciones")
+
+knitr::kable(
+  tabla_gsp_conc, digits = 3,
+  caption = "GSP: comparaciones de concentraciones del modelo aditivo"
+)
+
+knitr::kable(
+  letras_gsp_esp,
+  caption = "GSP: letras para el efecto principal de especie"
+)
+```
+
+# SYN · Sincronización de la germinación
+
+SYN describe el grado de coincidencia temporal de la germinación. T5 queda fuera del modelo porque la sincronización es indefinida cuando no germina ninguna semilla.
+
+## Modelo factorial y supuestos
+
+```{r}
+#| label: syn-modelo-y-supuestos
+
+modelo_syn <- lm(syn ~ especies * concentraciones, data = datos_modelo)
+
+cat("Shapiro-Wilk (residuos de SYN):\n")
+print(shapiro.test(residuals(modelo_syn)))
+
+cat("Fligner-Killeen (SYN entre combinaciones):\n")
+print(fligner.test(syn ~ grupo, data = datos_modelo))
+```
+
+## ANOVA y comparaciones múltiples
+
+```{r}
+#| label: syn-anova-y-tukey
+
+anova_syn <- anova(modelo_syn)
+knitr::kable(anova_syn, digits = 5, caption = "SYN: ANOVA factorial")
+
+emm_syn <- emmeans::emmeans(modelo_syn, ~ concentraciones | especies)
+tukey_syn <- pairs(emm_syn, adjust = "tukey")
+summary(tukey_syn)
+
+emm_esp_syn <- emmeans::emmeans(modelo_syn, ~ especies | concentraciones)
+comparacion_esp_syn <- pairs(emm_esp_syn)
+summary(comparacion_esp_syn)
+```
+
+## Letras para la figura de SYN
+
+```{r}
+#| label: syn-letras
+
+letras_syn <- multcomp::cld(emm_syn, Letters = letters) %>%
+  as.data.frame() %>%
+  dplyr::transmute(especies, concentraciones,
+                   media = emmean, EE = SE,
+                   letra = trimws(.group))
+
+letras_esp_syn <- multcomp::cld(emm_esp_syn, Letters = LETTERS) %>%
+  as.data.frame() %>%
+  dplyr::transmute(especies, concentraciones,
+                   letra_especie = trimws(.group))
+
+tabla_syn <- letras_syn %>%
+  dplyr::left_join(letras_esp_syn,
+                   by = c("especies", "concentraciones")) %>%
+  dplyr::mutate(etiqueta = paste0(letra, letra_especie)) %>%
+  dplyr::arrange(especies, concentraciones)
+
+knitr::kable(tabla_syn, digits = 3,
+             caption = "SYN: medias marginales, EE y grupos de significancia")
+```
+
+# Diagnóstico gráfico de los modelos lineales
+
+Se muestran los residuos frente a los valores ajustados y los gráficos Q-Q. Se conserva la observación `1014` de GSP: su secuencia acumulada fue verificada y es válida, aunque es relativamente influyente para el ajuste aditivo.
+
+```{r}
+#| label: diagnosticos-lineales
+#| include: false
+
+op <- par(mfrow = c(3, 2), mar = c(4, 4, 2, 1))
+plot(modelo_mgt, which = 1)
+plot(modelo_mgt, which = 2)
+plot(modelo_gsp_aditivo, which = 1)
+plot(modelo_gsp_aditivo, which = 2)
+plot(modelo_syn, which = 1)
+plot(modelo_syn, which = 2)
+par(op)
+```
+
+# Presentación gráfica de los resultados
+
+Se generan **exactamente tres figuras finales**: (1) germinabilidad (GRP); (2) tiempo medio, velocidad y sincronización de la germinación (MGT, GSP y SYN); y (3) PCA con dos paneles: **(a)** círculo de correlaciones y **(b)** 40 unidades experimentales originales, coloreadas por concentración y diferenciadas por especie. El clúster se calcula automáticamente con base exclusivamente en los índices de germinación; sus agrupaciones se representan mediante contornos descriptivos, sin dendrograma, rombos ni centroides añadidos.
+
+Los índices se presentan con la nomenclatura de **GerminaR**. El eje X de las Figuras 1 y 2 trata las concentraciones como **categorías ordenadas**, por lo que su separación gráfica no es proporcional a los saltos reales de concentración. Las unidades indicadas como `%` deben confirmarse con el protocolo experimental.
+
+## Estilo común de las figuras
+
+```{r}
+#| label: estilo-comun-figuras
+
+# Cambia estos valores en un único lugar para todos los gráficos.
+grosor_linea <- 0.65
+grosor_error <- 0.40
+ancho_error  <- 0.08
+tam_punto    <- 2.30
+tam_letra    <- 3.30
+
+estilo_germ <- ggplot2::theme_classic(base_size = 12) +
+  ggplot2::theme(
+    legend.position = "top",
+    legend.title = ggplot2::element_blank(),
+    legend.text = ggplot2::element_text(size = 10),
+    axis.title = ggplot2::element_text(size = 11),
+    axis.text = ggplot2::element_text(color = "#303030", size = 10),
+    axis.line = ggplot2::element_line(color = "#444444", linewidth = 0.45),
+    panel.grid.major.y = ggplot2::element_line(color = "#EAEAEA", linewidth = 0.35),
+    plot.title = ggplot2::element_blank(),
+    plot.tag = ggplot2::element_text(face = "bold", size = 13),
+    plot.margin = ggplot2::margin(10, 12, 10, 12)
+  )
+
+# Separación discreta entre las especies para evitar superposiciones.
+desplazamiento_x <- function(especie) {
+  ifelse(as.character(especie) == "rabanito", -0.09, 0.09)
+}
+
+# T0 ... T5 están ordenados, pero la escala X NO representa distancias reales.
+escala_trat <- function(incluir_T5 = FALSE) {
+  n <- if (incluir_T5) 6L else 5L
+  ggplot2::scale_x_continuous(
+    breaks = seq_len(n),
+    labels = etiquetas_trat[seq_len(n)],
+    limits = c(0.65, n + 0.35),
+    expand = ggplot2::expansion(mult = 0)
+  )
+}
+
+etiqueta_concentracion <- "Tratamientos"
+```
+
+## Figura 1. Germinabilidad (GRP)
+
+Se muestran los **seis tratamientos**, con el valor observado (media ± EE descriptivo, cuatro repeticiones). Las letras minúsculas comparan concentraciones **dentro de cada especie** según el modelo binomial y Tukey. **No se incluyen mayúsculas**, ya que el contraste global de especie no fue significativo (p = 0,162) y la interacción tampoco (p = 0,354). La línea une **T0–T5 como categorías ordenadas**, sin implicar continuidad cuantitativa ni resultados observados entre el 10 % y el 100 %. Las concentraciones correspondientes a T0–T5 son 0, 1,25, 2,5, 5, 10 y 100 (confirmar unidad antes de publicar).
+
+```{r}
+#| label: figura-1-grp
+#| fig-width: 9.5
+#| fig-height: 5.8
+#| fig-cap: "Germinabilidad (GRP) de rabanito y lechuga frente a las concentraciones de agua residual de café. Medias observadas ± EE descriptivo (n = 4). Las letras minúsculas representan comparaciones de Tukey de concentraciones dentro de especie sobre el modelo binomial con reducción de sesgo (α = 0,05). T0–T5 se conectan únicamente para guiar la lectura de categorías; no implica interpolación entre 10 y 100 %. T0 = 0, T1 = 1,25, T2 = 2,5, T3 = 5, T4 = 10 y T5 = 100."
+
+fig_grp <- resumen_germ %>%
+  dplyr::left_join(letras_grp, by = c("especies", "concentraciones")) %>%
+  dplyr::mutate(
+    x_num = as.numeric(concentraciones) + desplazamiento_x(especies),
+    y_letra = dplyr::if_else(
+      concentraciones == "T5_100",
+      dplyr::if_else(especies == "rabanito", 7, 12),
+      pmin(109, grp_media + grp_ee + 5)
+    )
+  )
+
+# Mostrar una curva completa de T0 a T5, solo a nivel categórico.
+fig_grp_lineas <- fig_grp
+
+p_grp <- ggplot2::ggplot(
+  fig_grp,
+  ggplot2::aes(x = x_num, y = grp_media,
+               color = especies, shape = especies, group = especies)
+) +
+  ggplot2::geom_line(data = fig_grp_lineas, linewidth = grosor_linea) +
+  ggplot2::geom_errorbar(
+    ggplot2::aes(ymin = pmax(0, grp_media - grp_ee),
+                 ymax = pmin(100, grp_media + grp_ee)),
+    width = ancho_error, linewidth = grosor_error
+  ) +
+  ggplot2::geom_point(size = tam_punto) +
+  ggplot2::geom_text(
+    ggplot2::aes(y = y_letra, label = letra),
+    color = "#262626", size = tam_letra, show.legend = FALSE
+  ) +
+  ggplot2::scale_color_manual(values = colores_especies,
+                               labels = etiquetas_especies) +
+  ggplot2::scale_shape_manual(values = formas_especies,
+                               labels = etiquetas_especies) +
+  escala_trat(incluir_T5 = TRUE) +
+  ggplot2::scale_y_continuous(breaks = seq(0, 100, 20)) +
+  ggplot2::coord_cartesian(ylim = c(0, 114), clip = "off") +
+  ggplot2::labs(x = etiqueta_concentracion, y = "Germinabilidad (%)") +
+  estilo_germ
+
+print(p_grp)
+```
+
+## Figura 2. Tiempo, velocidad y sincronización
+
+Se mantiene **una sola figura de tres paneles**. En MGT y SYN, las letras minúsculas comparan concentraciones dentro de especie y las mayúsculas especies dentro de concentración. En GSP, las minúsculas corresponden al **efecto general de concentración** y las mayúsculas al **efecto general de especie** del modelo aditivo: ambas se presentan sobre cada curva, pero **no representan comparaciones dentro de cada combinación**.
+
+```{r}
+#| label: preparar-figura-2
+
+fig_mgt <- tabla_mgt %>%
+  dplyr::mutate(
+    x_num = as.numeric(concentraciones) + desplazamiento_x(especies),
+    y_letra = media + EE + 0.11
+  )
+
+fig_syn <- tabla_syn %>%
+  dplyr::mutate(
+    x_num = as.numeric(concentraciones) + desplazamiento_x(especies),
+    y_letra = media + EE + 0.044
+  )
+
+# GSP: dos especies, medias observadas y errores estándar descriptivos.
+fig_gsp <- resumen_germ %>%
+  dplyr::filter(concentraciones != "T5_100") %>%
+  dplyr::transmute(
+    especies, concentraciones,
+    media = gsp_media,
+    EE = gsp_ee,
+    x_num = as.numeric(concentraciones) + desplazamiento_x(especies)
+  )
+
+# Unir letras de ambos efectos principales a cada observación de GSP.
+# Las letras de cada especie se repiten en T0–T4 por tratarse
+# de comparaciones MARGINALES del modelo aditivo, no de interacción.
+fig_gsp_letras <- fig_gsp %>%
+  dplyr::left_join(letras_gsp_conc, by = "concentraciones") %>%
+  dplyr::left_join(letras_gsp_esp, by = "especies") %>%
+  dplyr::mutate(
+    etiqueta = paste0(letra_conc, letra_esp),
+    y_letra = media + EE + 5
+  )
+```
+
+```{r}
+#| label: figura-2-indices
+#| fig-width: 15.8
+#| fig-height: 6
+#| fig-cap: "Índices de GerminaR: (A) tiempo medio de germinación (MGT), (B) velocidad de germinación (GSP) y (C) sincronización (SYN), para T0–T4; T5 carece de índices definidos. En A y C: minúsculas comparan concentraciones dentro de especie y mayúsculas especies dentro de concentración (ANOVA con interacción). En B: minúsculas comparan concentraciones promediadas entre especies y mayúsculas especies promediadas entre concentraciones (modelo aditivo); las letras repetidas no implican contrastes por combinación. Datos de B: medias observadas ± EE descriptivo (n = 4). Significancia α = 0,05. T0 = 0; T1 = 1,25; T2 = 2,5; T3 = 5; T4 = 10 (unidad por confirmar)."
+
+# Función común: misma estética para MGT y SYN.
+grafico_interaccion <- function(tabla, nombre_y, ymax, marcas_y) {
+  ggplot2::ggplot(
+    tabla,
+    ggplot2::aes(x = x_num, y = media,
+                 color = especies, shape = especies, group = especies)
+  ) +
+    ggplot2::geom_line(linewidth = grosor_linea) +
+    ggplot2::geom_errorbar(
+      ggplot2::aes(ymin = pmax(0, media - EE), ymax = media + EE),
+      width = ancho_error, linewidth = grosor_error
+    ) +
+    ggplot2::geom_point(size = tam_punto) +
+    ggplot2::geom_text(
+      ggplot2::aes(y = y_letra, label = etiqueta),
+      color = "#262626", size = tam_letra, show.legend = FALSE
+    ) +
+    ggplot2::scale_color_manual(values = colores_especies,
+                                 labels = etiquetas_especies) +
+    ggplot2::scale_shape_manual(values = formas_especies,
+                                 labels = etiquetas_especies) +
+    escala_trat() +
+    ggplot2::scale_y_continuous(breaks = marcas_y) +
+    ggplot2::coord_cartesian(ylim = c(0, ymax), clip = "off") +
+    ggplot2::labs(x = etiqueta_concentracion, y = nombre_y) +
+    estilo_germ
+}
+
+p_mgt <- grafico_interaccion(
+  fig_mgt, "Tiempo medio de germinación (días)", 4, 0:4
+) + ggplot2::labs(x = NULL)
+
+p_gsp <- ggplot2::ggplot(
+  fig_gsp,
+  ggplot2::aes(x = x_num, y = media,
+               color = especies, shape = especies, group = especies)
+) +
+  ggplot2::geom_line(linewidth = grosor_linea) +
+  ggplot2::geom_errorbar(
+    ggplot2::aes(ymin = pmax(0, media - EE), ymax = media + EE),
+    width = ancho_error, linewidth = grosor_error
+  ) +
+  ggplot2::geom_point(size = tam_punto) +
+  ggplot2::geom_text(
+    data = fig_gsp_letras,
+    mapping = ggplot2::aes(x = x_num, y = y_letra, label = etiqueta),
+    inherit.aes = FALSE, color = "#262626", size = tam_letra
+  ) +
+  ggplot2::scale_color_manual(values = colores_especies,
+                               labels = etiquetas_especies) +
+  ggplot2::scale_shape_manual(values = formas_especies,
+                               labels = etiquetas_especies) +
+  escala_trat() +
+  ggplot2::scale_y_continuous(breaks = seq(0, 100, 20)) +
+  ggplot2::coord_cartesian(ylim = c(0, 112), clip = "off") +
+  ggplot2::labs(x = etiqueta_concentracion, y = "Velocidad de germinación (%)") +
+  estilo_germ
+
+p_syn <- grafico_interaccion(
+  fig_syn, "Índice de sincronización", 1.10, seq(0, 1, 0.2)
+) + ggplot2::labs(x = NULL)
+
+figura_indices <- (p_mgt | p_gsp | p_syn) +
+  patchwork::plot_layout(guides = "collect") +
+  patchwork::plot_annotation(tag_levels = "A") &
+  ggplot2::theme(legend.position = "top")
+
+print(figura_indices)
+```
+
+
+# Análisis multivariado: PCA y agrupamiento automático
+
+El PCA se estima con **40 unidades experimentales de T0–T4** y los cuatro índices (GRP, MGT, GSP y SYN). T5 se excluye exclusivamente del PCA porque MGT, GSP y SYN son indefinidos en ausencia de germinación. El agrupamiento jerárquico de las 40 observaciones se realiza mediante distancias euclidianas sobre las cuatro componentes principales y método Ward.D2; el número de clústeres se selecciona automáticamente por silueta media, dentro de los valores evaluados (2 a 6).
+
+La presentación utiliza **color para el tratamiento**, **forma para la especie** y **contornos para los clústeres automáticos**. El algoritmo de agrupamiento nunca utiliza las etiquetas de tratamiento ni de especie.
+
+## Preparación y ajuste del PCA
+
+```{r}
+#| label: pca-preparacion-definitiva
+
+# T5 se excluye: no hubo germinación, por lo que MGT, GSP y SYN
+# son índices matemáticamente indefinidos en esas placas.
+variables_pca <- c("grp", "mgt", "gsp", "syn")
+niveles_pca <- c("T0_0", "T1_1.25", "T2_2.5", "T3_5", "T4_10")
+
+datos_pca <- dt %>%
+  dplyr::filter(concentraciones %in% niveles_pca) %>%
+  dplyr::select(plots, especies, concentraciones, rep,
+                dplyr::all_of(variables_pca)) %>%
+  tidyr::drop_na(dplyr::all_of(variables_pca)) %>%
+  dplyr::mutate(
+    especies = factor(as.character(especies),
+                      levels = c("rabanito", "lechuga")),
+    concentraciones = factor(as.character(concentraciones),
+                             levels = niveles_pca)
+  ) %>%
+  dplyr::arrange(plots)
+
+stopifnot(nrow(datos_pca) == 40L)
+stopifnot(!anyNA(datos_pca$especies), !anyNA(datos_pca$concentraciones))
+stopifnot(anyDuplicated(datos_pca$plots) == 0L)
+
+matriz_pca <- datos_pca %>%
+  dplyr::select(dplyr::all_of(variables_pca)) %>%
+  as.data.frame()
+
+stopifnot(all(vapply(matriz_pca, function(x) all(is.finite(x)), logical(1))))
+stopifnot(all(vapply(matriz_pca, stats::sd, numeric(1)) > 0))
+
+# FactoMineR calcula el PCA sobre las 40 observaciones (no sobre medias).
+modelo_pca <- FactoMineR::PCA(
+  matriz_pca,
+  scale.unit = TRUE,
+  ncp = length(variables_pca),
+  graph = FALSE
+)
+
+knitr::kable(
+  as.data.frame(modelo_pca$eig), digits = 3,
+  caption = "PCA: autovalores y variación explicada"
+)
+
+knitr::kable(
+  as.data.frame(modelo_pca$var$contrib), digits = 2,
+  caption = "PCA: contribución de las variables"
+)
+
+knitr::kable(
+  round(stats::cor(matriz_pca), 3),
+  caption = "Correlación entre índices de germinación"
+)
+```
+
+## Agrupamiento automático de las 40 unidades
+
+```{r}
+#| label: cluster-automatico-definitivo
+
+# Coordenadas de las 40 placas en las CUATRO componentes principales.
+coordenadas_pca <- as.data.frame(
+  modelo_pca$ind$coord[, seq_along(variables_pca), drop = FALSE]
+)
+names(coordenadas_pca) <- paste0("PC", seq_along(variables_pca))
+
+ind_pca <- dplyr::bind_cols(
+  datos_pca %>%
+    dplyr::select(plots, especies, concentraciones, rep),
+  coordenadas_pca
+)
+
+# Los grupos se calculan SOLO con los índices transformados por PCA.
+# Las variables 'especies' y 'concentraciones' NO intervienen aquí.
+distancias_ind <- stats::dist(coordenadas_pca, method = "euclidean")
+modelo_cluster <- stats::hclust(distancias_ind, method = "ward.D2")
+
+# Se elige automáticamente el número de grupos (k = 2,...,6)
+# mediante la mayor silueta media; no se fuerza ningún k particular.
+valores_k <- 2:6
+siluetas <- vapply(valores_k, function(k) {
+  grupos_k <- stats::cutree(modelo_cluster, k = k)
+  mean(cluster::silhouette(grupos_k, distancias_ind)[, "sil_width"])
+}, numeric(1))
+
+k_elegido <- valores_k[which.max(siluetas)]
+ind_pca$grupo <- factor(stats::cutree(modelo_cluster, k = k_elegido))
+
+cat("Número de clústeres seleccionado:", k_elegido, "\n")
+cat("Silueta media:", round(max(siluetas), 3), "\n")
+
+knitr::kable(
+  data.frame(k = valores_k, silueta_media = siluetas),
+  digits = 3,
+  caption = "Clúster: selección automática por silueta media"
+)
+
+knitr::kable(
+  ind_pca %>%
+    dplyr::count(grupo, especies, concentraciones, name = "n") %>%
+    dplyr::arrange(grupo, especies, concentraciones),
+  caption = "Composición de los grupos por especie y tratamiento"
+)
+```
+
+## Figura 3. PCA de variables e individuos
+
+```{r}
+#| label: figura-3-pca-dosis-cluster
+#| fig-width: 15.5
+#| fig-height: 7.1
+#| fig-cap: "Análisis de componentes principales (PCA) de la germinación en T0–T4. (a) Círculo de correlaciones de GRP, MGT, GSP y SYN. (b) Proyección de las 40 unidades experimentales: color = concentración y forma = especie. Los contornos discontinuos indican la extensión descriptiva de los clústeres obtenidos mediante Ward.D2 sobre las cuatro componentes principales, con k elegido automáticamente por silueta. Los grupos de dos observaciones se representan mediante un segmento; no se presentan intervalos de confianza. T5 se excluyó por ausencia de germinación e índices de tiempo, velocidad y sincronización indefinidos."
+
+# Mantener un estilo compatible con las Figuras 1 y 2.
+if (exists("estilo_germ")) {
+  tema_pca <- estilo_germ
+} else {
+  tema_pca <- ggplot2::theme_classic(base_size = 12) +
+    ggplot2::theme(
+      panel.grid.major.y = ggplot2::element_line(
+        color = "#EAEAEA", linewidth = 0.35
+      ),
+      plot.tag = ggplot2::element_text(face = "bold", size = 13)
+    )
+}
+
+# A. Círculo de correlaciones
+angulos <- seq(0, 2 * pi, length.out = 301)
+circulo <- data.frame(x = cos(angulos), y = sin(angulos))
+
+var_pca <- as.data.frame(modelo_pca$var$cor[, 1:2, drop = FALSE])
+names(var_pca) <- c("PC1", "PC2")
+var_pca$indice <- toupper(rownames(var_pca))
+
+p_pca_vars <- ggplot2::ggplot() +
+  ggplot2::geom_path(
+    data = circulo, ggplot2::aes(x, y),
+    color = "#303030", linewidth = 0.6
+  ) +
+  ggplot2::geom_hline(yintercept = 0, linetype = "dashed",
+                      linewidth = 0.35) +
+  ggplot2::geom_vline(xintercept = 0, linetype = "dashed",
+                      linewidth = 0.35) +
+  ggplot2::geom_segment(
+    data = var_pca,
+    ggplot2::aes(x = 0, y = 0, xend = PC1, yend = PC2),
+    color = "#303030", linewidth = 0.55,
+    arrow = grid::arrow(length = grid::unit(0.17, "cm"))
+  ) +
+  ggplot2::geom_text(
+    data = var_pca,
+    ggplot2::aes(x = PC1 * 1.12, y = PC2 * 1.12, label = indice),
+    color = "#202020", size = 3.4, check_overlap = TRUE
+  ) +
+  ggplot2::coord_fixed(xlim = c(-1.2, 1.2), ylim = c(-1.2, 1.2)) +
+  ggplot2::scale_x_continuous(breaks = seq(-1, 1, 0.5)) +
+  ggplot2::scale_y_continuous(breaks = seq(-1, 1, 0.5)) +
+  ggplot2::labs(
+    tag = "a", title = "PCA de variables",
+    x = sprintf("Dim 1 (%.1f%%)", modelo_pca$eig[1, 2]),
+    y = sprintf("Dim 2 (%.1f%%)", modelo_pca$eig[2, 2])
+  ) +
+  tema_pca +
+  ggplot2::theme(
+    plot.title = ggplot2::element_text(face = "bold", hjust = 0.5,
+                                      size = 12)
+  )
+
+# B. Individuos (una observación = una placa, no un promedio)
+# Los colores de dosis son una convención visual; no afectan al agrupamiento.
+colores_trat <- c(
+  "T0_0" = "#CE8A88", "T1_1.25" = "#377EB8",
+  "T2_2.5" = "#3E9A65", "T3_5" = "#8D67A8",
+  "T4_10" = "#D55243"
+)
+
+etiquetas_dosis <- c(
+  "T0_0" = "T0 (0 %)", "T1_1.25" = "T1 (1,25 %)",
+  "T2_2.5" = "T2 (2,5 %)", "T3_5" = "T3 (5 %)",
+  "T4_10" = "T4 (10 %)"
+)
+
+# Paleta de contornos, con tantos colores como grupos se hayan encontrado.
+# Esto NO cambia ni determina la pertenencia estadística de ningún individuo.
+paleta_grupos <- c(
+  "#008C97", "#D55A32", "#8966AD",
+  "#4A9655", "#C39030", "#4E77B6"
+)
+
+p_pca_ind <- ggplot2::ggplot() +
+  ggplot2::geom_hline(yintercept = 0, linetype = "dashed",
+                      linewidth = 0.35) +
+  ggplot2::geom_vline(xintercept = 0, linetype = "dashed",
+                      linewidth = 0.35)
+
+# Los límites de cada clúster se trazan a partir de la pertenencia
+# obtenida automáticamente. No son regiones de confianza.
+for (j in seq_len(k_elegido)) {
+  miembros <- ind_pca[as.character(ind_pca$grupo) == as.character(j), ,
+                      drop = FALSE]
+
+  if (nrow(miembros) >= 3L) {
+    indices_hull <- grDevices::chull(miembros$PC1, miembros$PC2)
+    vertices <- miembros[indices_hull, , drop = FALSE]
+
+    if (nrow(vertices) >= 3L) {
+      p_pca_ind <- p_pca_ind + ggplot2::geom_polygon(
+        data = vertices,
+        mapping = ggplot2::aes(x = PC1, y = PC2),
+        inherit.aes = FALSE,
+        fill = grDevices::adjustcolor(paleta_grupos[j], alpha.f = 0.07),
+        colour = paleta_grupos[j], linewidth = 0.65,
+        linetype = "dashed", show.legend = FALSE
+      )
+    } else {
+      p_pca_ind <- p_pca_ind + ggplot2::geom_path(
+        data = vertices,
+        mapping = ggplot2::aes(x = PC1, y = PC2),
+        inherit.aes = FALSE,
+        colour = paleta_grupos[j], linewidth = 0.65,
+        linetype = "dashed", show.legend = FALSE
+      )
+    }
+  } else if (nrow(miembros) == 2L) {
+    # Dos individuos: no se inventa un polígono ni una elipse.
+    p_pca_ind <- p_pca_ind + ggplot2::geom_path(
+      data = miembros,
+      mapping = ggplot2::aes(x = PC1, y = PC2),
+      inherit.aes = FALSE,
+      colour = paleta_grupos[j], linewidth = 0.65,
+      linetype = "dashed", show.legend = FALSE
+    )
+  }
+}
+
+# SOLO círculos y triángulos: cada punto es una repetición real.
+p_pca_ind <- p_pca_ind +
+  ggplot2::geom_point(
+    data = ind_pca,
+    mapping = ggplot2::aes(x = PC1, y = PC2,
+                           colour = concentraciones, shape = especies),
+    size = 2.7, alpha = 0.95
+  ) +
+  ggplot2::scale_color_manual(
+    name = "Tratamiento", values = colores_trat,
+    breaks = niveles_pca, labels = etiquetas_dosis[niveles_pca],
+    drop = FALSE
+  ) +
+  ggplot2::scale_shape_manual(
+    name = "Especie", values = c(rabanito = 16, lechuga = 17),
+    breaks = c("rabanito", "lechuga"),
+    labels = c("Rabanito", "Lechuga")
+  ) +
+  ggplot2::guides(
+    colour = ggplot2::guide_legend(
+      nrow = 1, order = 1,
+      override.aes = list(shape = 16, size = 3, alpha = 1)
+    ),
+    shape = ggplot2::guide_legend(
+      nrow = 1, order = 2,
+      override.aes = list(colour = "#303030", size = 3)
+    )
+  ) +
+  ggplot2::scale_x_continuous(
+    expand = ggplot2::expansion(mult = c(0.06, 0.12))
+  ) +
+  ggplot2::scale_y_continuous(
+    expand = ggplot2::expansion(mult = c(0.07, 0.16))
+  ) +
+  ggplot2::labs(
+    tag = "b", title = "PCA de individuos",
+    x = sprintf("Dim 1 (%.1f%%)", modelo_pca$eig[1, 2]),
+    y = sprintf("Dim 2 (%.1f%%)", modelo_pca$eig[2, 2])
+  ) +
+  tema_pca +
+  ggplot2::theme(
+    legend.position = "bottom",
+    legend.box = "vertical",
+    legend.title = ggplot2::element_text(size = 10),
+    legend.text = ggplot2::element_text(size = 9),
+    panel.grid.major.y = ggplot2::element_blank(),
+    plot.title = ggplot2::element_text(face = "bold", hjust = 0.5,
+                                      size = 12)
+  )
+
+# Etiquetas de clúster dentro del margen superior derecho: el número
+# y los colores se calculan según k_elegido; sin subtítulo ni leyenda extra.
+for (j in seq_len(k_elegido)) {
+  p_pca_ind <- p_pca_ind + ggplot2::annotate(
+    "text", x = Inf, y = Inf,
+    label = paste("cluster", j),
+    colour = paleta_grupos[j],
+    hjust = 1.05, vjust = 1.2 + 1.3 * (j - 1),
+    size = 3.4
+  )
+}
+
+# Una figura, exactamente dos paneles: sin rombos y sin dendrograma.
+figura_pca <- (p_pca_vars | p_pca_ind) +
+  patchwork::plot_layout(widths = c(1, 1.55))
+
+print(figura_pca)
+```
+
+
+
+# Exportación de las tres figuras
+
+Las Figuras 1, 2 y 3 se guardan en el subdirectorio `figuras/` como **PNG (300 dpi)** y **PDF vectorial**. El análisis de clúster se informa también en las tablas del documento, sin generar un dendrograma adicional.
+
+```{r}
+#| label: exportar-solo-tres-figuras
+
+if (!dir.exists("figuras")) dir.create("figuras", recursive = TRUE)
+
+guardar_figura <- function(figura, nombre, ancho, alto) {
+  ggplot2::ggsave(
+    file.path("figuras", paste0(nombre, ".png")),
+    plot = figura, width = ancho, height = alto,
+    units = "in", dpi = 300, device = "png", bg = "white"
+  )
+  ggplot2::ggsave(
+    file.path("figuras", paste0(nombre, ".pdf")),
+    plot = figura, width = ancho, height = alto,
+    units = "in", bg = "white"
+  )
+}
+
+guardar_figura(p_grp, "Figura_1_GRP", 9.5, 5.8)
+guardar_figura(figura_indices, "Figura_2_indices", 15.8, 6.0)
+guardar_figura(figura_pca, "Figura_3_PCA_cluster_automatico", 15.5, 7.1)
+```
+
+# Notas para la interpretación y alcance
+
+- **Germinabilidad (GRP):** se evalúan T0–T5; las letras minúsculas comparan dosis *dentro de cada especie* mediante el modelo binomial con reducción de sesgo. La unión gráfica T4–T5 solo conecta categorías ordenadas y no implica interpolación entre 10 y 100 %.
+- **MGT y SYN:** para T0–T4 se interpretan las interacciones especie × tratamiento. En la Figura 2, las minúsculas comparan concentraciones dentro de especie y las mayúsculas comparan especies dentro de concentración.
+- **GSP:** se usa el modelo aditivo para los datos actuales, dada la interacción no significativa del modelo factorial inicial. Las letras minúsculas representan el efecto marginal de concentración, y las mayúsculas el efecto marginal de especie; las etiquetas combinadas **no** representan contrastes de cada celda especie × tratamiento.
+- **PCA:** se ajusta a las **40 unidades experimentales originales** de T0–T4. Cada punto del panel de individuos corresponde a una placa Petri, y no a la media de un tratamiento. Los colores identifican tratamientos; las formas, especies. MGT y GSP guardan una relación matemática (`GSP = 100/MGT`), por lo que sus contribuciones no son evidencia independiente.
+- **Clúster:** la pertenencia de cada individuo se calcula únicamente a partir de las cuatro dimensiones del PCA, sin usar especie ni tratamiento para agrupar. Los contornos del panel son envolventes descriptivas sobre PC1–PC2, **no** intervalos de confianza ni pruebas de diferencias significativas. Un clúster de dos individuos se representa mediante un segmento descriptivo.
+- **T5:** registra 0 % de germinación en ambas especies. Se incluye en GRP, pero se excluye de MGT, GSP, SYN y PCA, pues estos índices no están definidos cuando no germina ninguna semilla.
+- **Concentraciones:** antes de publicar, confirmar que los niveles de la hoja de cálculo están expresados como porcentaje volumétrico del efluente original (0; 1,25; 2,5; 5; 10 y 100 %) y especificar el volumen aplicado por unidad experimental.

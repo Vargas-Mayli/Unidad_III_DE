@@ -1,0 +1,1451 @@
+---
+title: "Efecto de diferentes concentraciones de agua residual del beneficio húmedo de café (Coffea arabica L.) sobre la germinación y crecimiento inicial de rabanito (Raphanus sativus L.) y lechuga (Lactuca sativa L.)"
+subtitle: "Bioensayo · Evaluaciones acumuladas entre los días 0 y 7"
+lang: es
+format:
+  html:
+    theme: cosmo
+    toc: true
+    toc-location: left
+    toc-depth: 3
+    number-sections: true
+    code-fold: show
+    code-line-numbers: true
+    code-overflow: wrap
+    embed-resources: true
+execute:
+  echo: true
+  warning: true
+  message: false
+editor_options:
+  chunk_output_type: console
+---
+
+# Diseño experimental
+
+Se evaluó el efecto de seis concentraciones de agua residual del beneficio húmedo del café sobre la germinación de rabanito (*Raphanus sativus* L.) y lechuga (*Lactuca sativa* L.).
+
+El experimento se desarrolló bajo un diseño completamente al azar (DCA), con arreglo factorial de **2 especies × 6 concentraciones × 4 repeticiones**, utilizando 25 semillas por unidad experimental. Se establecieron 48 unidades experimentales, con un total de 1200 semillas.
+
+La germinación se registró diariamente durante siete días, mediante conteos acumulados.
+
+# Preparación de datos
+
+## Paquetes
+
+```{r}
+#| label: paquetes
+
+library(googlesheets4)
+library(dplyr)
+library(tidyr)
+library(GerminaR)
+library(brglm2)
+library(emmeans)
+library(multcomp)
+library(multcompView)
+library(ggplot2)
+library(patchwork)
+library(FactoMineR)
+library(cluster)
+library(knitr)
+
+```
+
+## Importación de datos
+
+```{r}
+#| label: importar-datos
+
+url <- "https://docs.google.com/spreadsheets/d/1XafwcOa34aGFagsr7NvInyx-XuzE2HOhgL33pb_t4ng/edit"
+
+gs <- googlesheets4::as_sheets_id(url)
+
+niveles_trat <- c(
+  "T0_0", "T1_1.25", "T2_2.5",
+  "T3_5", "T4_10", "T5_100"
+)
+
+fb <- googlesheets4::range_read(
+  ss = gs,
+  sheet = "fb"
+) %>%
+  mutate(
+    plots = as.character(plots),
+    especies = factor(especies, levels = c("rabanito", "lechuga")),
+    concentraciones = factor(concentraciones, levels = niveles_trat),
+    rep = factor(rep),
+    seed = as.integer(seed),
+    across(matches("^germ_[0-7]$"), as.integer)
+  )
+
+glimpse(fb)
+
+```
+
+# Curvas de germinación acumulada
+
+```{r}
+
+#| label: curvas-preparacion
+
+datos_curvas <- fb %>%
+  dplyr::select(
+    plots, especies, concentraciones, seed,
+    germ_0:germ_7
+  ) %>%
+  tidyr::pivot_longer(
+    cols = germ_0:germ_7,
+    names_to = "dia",
+    values_to = "germinadas"
+  ) %>%
+  dplyr::mutate(
+    dia = as.integer(sub("germ_", "", dia)),
+    germinacion = germinadas / seed * 100
+  )
+
+resumen_curvas <- datos_curvas %>%
+  dplyr::group_by(especies, concentraciones, dia) %>%
+  dplyr::summarise(
+    media = mean(germinacion),
+    ee = sd(germinacion) / sqrt(dplyr::n()),
+    .groups = "drop"
+  )
+
+head(resumen_curvas)
+
+```
+
+## Configuración de las figuras
+
+```{r}
+
+#| label: estilo-figuras
+
+colores_especies <- c(
+  rabanito = "#B35D38",
+  lechuga = "#167C78"
+)
+
+formas_especies <- c(
+  rabanito = 16,
+  lechuga = 17
+)
+
+etiquetas_dosis <- c("0", "1,25", "2,5", "5", "10", "100")
+
+tema_figuras <- ggplot2::theme_classic(base_size = 12) +
+  ggplot2::theme(
+    legend.position = "top",
+    legend.title = ggplot2::element_blank(),
+    axis.text = ggplot2::element_text(color = "black"),
+    panel.grid.major.y = ggplot2::element_line(
+      color = "#EAEAEA", linewidth = 0.35
+    ),
+    strip.background = ggplot2::element_blank(),
+    strip.text = ggplot2::element_text(face = "bold", size = 11)
+  )
+
+```
+
+
+## Figura 3. Germinación acumulada
+
+```{r}
+
+#| label: figura-1-curvas
+#| fig-width: 12
+#| fig-height: 6
+
+colores_curvas <- c(
+  "T0_0" = "#333333",
+  "T1_1.25" = "#377EB8",
+  "T2_2.5" = "#3E9A65",
+  "T3_5" = "#E6A23C",
+  "T4_10" = "#9B65A8",
+  "T5_100" = "#D55243"
+)
+
+figura_1 <- ggplot2::ggplot(
+  resumen_curvas,
+  ggplot2::aes(
+    x = dia,
+    y = media,
+    color = concentraciones,
+    group = concentraciones
+  )
+) +
+  ggplot2::geom_line(linewidth = 0.8) +
+  ggplot2::geom_errorbar(
+    ggplot2::aes(
+      ymin = pmax(0, media - ee),
+      ymax = pmin(100, media + ee)
+    ),
+    width = 0.08,
+    linewidth = 0.3,
+    alpha = 0.5
+  ) +
+  ggplot2::geom_point(size = 2) +
+  ggplot2::facet_wrap(
+    ~ especies,
+    nrow = 1,
+    labeller = ggplot2::labeller(
+      especies = c(
+        rabanito = "Rabanito",
+        lechuga = "Lechuga"
+      )
+    )
+  ) +
+  ggplot2::scale_color_manual(
+    values = colores_curvas,
+    breaks = names(colores_curvas),
+    labels = c("0 %", "1,25 %", "2,5 %", "5 %", "10 %", "100 %")
+  ) +
+  ggplot2::scale_x_continuous(breaks = 0:7) +
+  ggplot2::scale_y_continuous(breaks = seq(0, 100, 20)) +
+  ggplot2::coord_cartesian(ylim = c(0, 105)) +
+  ggplot2::labs(
+    x = "Días",
+    y = "Germinación acumulada (%)",
+    color = "Concentración"
+  ) +
+  tema_figuras +
+  ggplot2::theme(
+    legend.position = "top",
+    legend.title = ggplot2::element_text(size = 10),
+    legend.text = ggplot2::element_text(size = 9)
+  ) +
+  ggplot2::guides(
+    color = ggplot2::guide_legend(nrow = 2, byrow = TRUE)
+  )
+
+print(figura_1)
+
+```
+
+## Guardar figura 1
+
+```{r}
+
+ggplot2::ggsave(
+  "figuras/Figura_1_curvas_germinacion.png",
+  plot = figura_1,
+  width = 12,
+  height = 6,
+  dpi = 600
+)
+
+```
+
+
+# Cálculo de los índices de germinación
+
+```{r}
+#| label: indices-germinacion
+
+fbx <- fb %>%
+  dplyr::select(
+    plots, especies, concentraciones, rep,
+    seed, germ_0:germ_7
+  )
+
+gsmx <- GerminaR::ger_summary(
+  factors = c("plots", "rep", "especies", "concentraciones"),
+  SeedN = "seed",
+  evalName = "germ_",
+  cumulative = TRUE,
+  data = fbx
+)
+
+dt <- gsmx %>%
+  dplyr::select(
+    plots, especies, concentraciones, rep,
+    grp, mgt, gsp, syn
+  ) %>%
+  dplyr::mutate(
+    dplyr::across(
+      c(mgt, gsp, syn),
+      ~ replace(.x, !is.finite(.x), NA_real_)
+    )
+  )
+
+head(dt)
+
+```
+
+## Estadística descriptiva
+
+```{r}
+
+#| label: estadistica-descriptiva
+
+resumen_germ <- dt %>%
+  dplyr::group_by(especies, concentraciones) %>%
+  dplyr::summarise(
+    dplyr::across(
+      c(grp, mgt, gsp, syn),
+      list(
+        media = ~ mean(.x, na.rm = TRUE),
+        sd = ~ sd(.x, na.rm = TRUE),
+        ee = ~ sd(.x, na.rm = TRUE) / sqrt(sum(!is.na(.x)))
+      ),
+      .names = "{.col}_{.fn}"
+    ),
+    .groups = "drop"
+  ) %>%
+  dplyr::mutate(
+    dplyr::across(
+      where(is.numeric),
+      ~ replace(.x, is.nan(.x), NA_real_)
+    )
+  )
+
+knitr::kable(
+  resumen_germ,
+  digits = 3,
+  caption = "Estadística descriptiva de los índices de germinación"
+)
+
+```
+
+# Modelo binomial: GRP - Porcentaje de germinación
+
+```{r}
+#| label: grp-modelo-binomial
+
+datos_grp <- fb %>%
+  dplyr::mutate(
+    germinadas = germ_7,
+    no_germinadas = seed - germ_7
+  )
+
+modelo_grp <- glm(
+  cbind(germinadas, no_germinadas) ~ especies * concentraciones,
+  family = binomial(link = "logit"),
+  data = datos_grp,
+  method = brglm2::brglmFit,
+  type = "AS_mean"
+)
+
+summary(modelo_grp)
+
+# Evaluación de la dispersión
+dispersion_grp <- sum(
+  residuals(modelo_grp, type = "pearson")^2
+) / df.residual(modelo_grp)
+
+dispersion_grp
+
+# Efectos factoriales
+pruebas_grp <- emmeans::joint_tests(modelo_grp)
+
+knitr::kable(
+  as.data.frame(pruebas_grp),
+  digits = 4,
+  caption = "Efectos factoriales sobre la germinación"
+)
+
+
+```
+
+## Comparaciones de Tukey
+
+```{r}
+#| label: grp-tukey
+
+# Comparar concentraciones dentro de cada especie
+emm_grp <- emmeans::emmeans(
+  modelo_grp,
+  ~ concentraciones | especies
+)
+
+summary(pairs(emm_grp, adjust = "tukey"))
+
+# Letras minúsculas: concentraciones
+letras_grp <- multcomp::cld(
+  emm_grp,
+  Letters = letters,
+  reversed = TRUE
+) %>%
+  as.data.frame() %>%
+  dplyr::transmute(
+    especies,
+    concentraciones,
+    letra = trimws(.group)
+  )
+
+# Comparar especies dentro de cada concentración
+emm_esp_grp <- emmeans::emmeans(
+  modelo_grp,
+  ~ especies | concentraciones
+)
+
+# Ajuste de Holm para las seis comparaciones
+comparaciones_esp_grp <- summary(
+  pairs(emm_esp_grp),
+  by = NULL,
+  adjust = "holm"
+) %>%
+  as.data.frame()
+
+knitr::kable(
+  comparaciones_esp_grp,
+  digits = 4,
+  caption = "Comparaciones entre especies con ajuste de Holm"
+)
+
+# Letras mayúsculas: especies
+letras_esp_grp <- as.data.frame(emm_esp_grp) %>%
+  dplyr::left_join(
+    comparaciones_esp_grp %>%
+      dplyr::select(concentraciones, p.value),
+    by = "concentraciones"
+  ) %>%
+  dplyr::group_by(concentraciones) %>%
+  dplyr::mutate(
+    letra_especie = dplyr::if_else(
+      p.value < 0.05 & emmean < max(emmean),
+      "B", "A"
+    )
+  ) %>%
+  dplyr::ungroup() %>%
+  dplyr::select(
+    especies, concentraciones, letra_especie
+  )
+
+# Tabla final de GRP
+tabla_grp <- resumen_germ %>%
+  dplyr::select(
+    especies, concentraciones,
+    grp_media, grp_sd, grp_ee
+  ) %>%
+  dplyr::left_join(
+    letras_grp,
+    by = c("especies", "concentraciones")
+  ) %>%
+  dplyr::left_join(
+    letras_esp_grp,
+    by = c("especies", "concentraciones")
+  ) %>%
+  dplyr::mutate(
+    etiqueta = paste0(letra, letra_especie)
+  ) %>%
+  dplyr::arrange(especies, concentraciones)
+
+knitr::kable(
+  tabla_grp,
+  digits = 3,
+  caption = "Germinabilidad y comparaciones múltiples"
+)
+
+
+```
+
+
+# MGT: tiempo medio de germinación
+
+```{r}
+#| label: mgt-modelo
+
+datos_modelo <- dt %>%
+  dplyr::filter(concentraciones != "T5_100") %>%
+  droplevels() %>%
+  dplyr::mutate(
+    grupo = interaction(especies, concentraciones)
+  )
+
+# ANOVA factorial
+modelo_mgt <- aov(
+  mgt ~ especies * concentraciones,
+  data = datos_modelo
+)
+
+summary(modelo_mgt)
+
+# Normalidad de residuos
+shapiro.test(residuals(modelo_mgt))
+
+# Homogeneidad de varianzas
+fligner.test(mgt ~ grupo, data = datos_modelo)
+
+# Gráfico Q-Q
+qqnorm(residuals(modelo_mgt))
+qqline(residuals(modelo_mgt), col = "red", lwd = 2)
+
+
+```
+
+## Comparaciones múltiples de Tukey
+
+```{r}
+
+#| label: mgt-tukey
+
+# Comparar concentraciones dentro de cada especie
+emm_mgt <- emmeans::emmeans(
+  modelo_mgt,
+  ~ concentraciones | especies
+)
+
+tukey_mgt <- pairs(emm_mgt, adjust = "tukey")
+summary(tukey_mgt)
+
+# Comparar especies dentro de cada concentración
+emm_esp_mgt <- emmeans::emmeans(
+  modelo_mgt,
+  ~ especies | concentraciones
+)
+
+summary(pairs(emm_esp_mgt))
+
+# Letras minúsculas: concentraciones
+letras_mgt <- multcomp::cld(
+  emm_mgt,
+  Letters = letters
+) %>%
+  as.data.frame() %>%
+  dplyr::transmute(
+    especies, concentraciones,
+    media = emmean,
+    EE = SE,
+    letra = trimws(.group)
+  )
+
+# Letras mayúsculas: especies
+letras_esp_mgt <- multcomp::cld(
+  emm_esp_mgt,
+  Letters = LETTERS
+) %>%
+  as.data.frame() %>%
+  dplyr::transmute(
+    especies, concentraciones,
+    letra_especie = trimws(.group)
+  )
+
+# Tabla final
+tabla_mgt <- letras_mgt %>%
+  dplyr::left_join(
+    letras_esp_mgt,
+    by = c("especies", "concentraciones")
+  ) %>%
+  dplyr::mutate(
+    etiqueta = paste0(letra, letra_especie)
+  )
+
+knitr::kable(
+  tabla_mgt,
+  digits = 3,
+  caption = "Tiempo medio de germinación y comparaciones múltiples"
+)
+
+
+```
+
+# GSP: Velocidad de germinación
+
+```{r}
+
+#| label: gsp-modelo
+
+# ANOVA factorial
+modelo_gsp <- aov(
+  gsp ~ especies * concentraciones,
+  data = datos_modelo
+)
+
+summary(modelo_gsp)
+
+# Normalidad de residuos
+shapiro.test(residuals(modelo_gsp))
+
+# Homogeneidad de varianzas
+fligner.test(gsp ~ grupo, data = datos_modelo)
+
+# Gráfico Q-Q
+qqnorm(
+  residuals(modelo_gsp),
+  main = "Q-Q plot de los residuos de GSP"
+)
+
+qqline(
+  residuals(modelo_gsp),
+  col = "red",
+  lwd = 2
+)
+
+```
+
+## modelo aditivo de GSP
+
+```{r}
+#| label: gsp-modelo-aditivo
+
+modelo_gsp_aditivo <- aov(
+  gsp ~ especies + concentraciones,
+  data = datos_modelo
+)
+
+summary(modelo_gsp_aditivo)
+
+# Normalidad de residuos
+shapiro.test(residuals(modelo_gsp_aditivo))
+
+# Homogeneidad de varianzas
+fligner.test(gsp ~ grupo, data = datos_modelo)
+
+# Gráfico Q-Q
+qqnorm(residuals(modelo_gsp_aditivo))
+qqline(residuals(modelo_gsp_aditivo), col = "red", lwd = 2)
+
+```
+
+## Comparaciones múltiples de GSP
+
+```{r}
+#| label: gsp-tukey
+
+# Comparar concentraciones
+emm_gsp_conc <- emmeans::emmeans(
+  modelo_gsp_aditivo,
+  ~ concentraciones
+)
+
+summary(pairs(emm_gsp_conc, adjust = "tukey"))
+
+# Letras minúsculas: concentraciones
+letras_gsp_conc <- multcomp::cld(
+  emm_gsp_conc,
+  Letters = letters,
+  adjust = "tukey"
+) %>%
+  as.data.frame() %>%
+  dplyr::transmute(
+    concentraciones,
+    letra = trimws(.group)
+  )
+
+# Comparar especies
+emm_gsp_esp <- emmeans::emmeans(
+  modelo_gsp_aditivo,
+  ~ especies
+)
+
+summary(pairs(emm_gsp_esp))
+
+# Letras mayúsculas: especies
+letras_gsp_esp <- multcomp::cld(
+  emm_gsp_esp,
+  Letters = LETTERS,
+  reversed = TRUE
+) %>%
+  as.data.frame() %>%
+  dplyr::transmute(
+    especies,
+    letra_especie = trimws(.group)
+  )
+
+# Tabla final de GSP
+tabla_gsp <- resumen_germ %>%
+  dplyr::filter(concentraciones != "T5_100") %>%
+  dplyr::select(
+    especies, concentraciones,
+    gsp_media, gsp_sd, gsp_ee
+  ) %>%
+  dplyr::left_join(
+    letras_gsp_conc,
+    by = "concentraciones"
+  ) %>%
+  dplyr::left_join(
+    letras_gsp_esp,
+    by = "especies"
+  ) %>%
+  dplyr::mutate(
+    etiqueta = paste0(letra, letra_especie)
+  ) %>%
+  dplyr::arrange(especies, concentraciones)
+
+knitr::kable(
+  tabla_gsp,
+  digits = 3,
+  caption = "Velocidad de germinación y comparaciones múltiples"
+)
+
+```
+
+# Sincronización de la germinación (SYN).
+
+```{r}
+#| label: syn-modelo
+
+# ANOVA factorial
+modelo_syn <- aov(
+  syn ~ especies * concentraciones,
+  data = datos_modelo
+)
+
+summary(modelo_syn)
+
+# Normalidad de residuos
+shapiro.test(residuals(modelo_syn))
+
+# Homogeneidad de varianzas
+fligner.test(syn ~ grupo, data = datos_modelo)
+
+# Gráfico Q-Q
+qqnorm(
+  residuals(modelo_syn),
+  main = "Q-Q plot de los residuos de SYN"
+)
+
+qqline(
+  residuals(modelo_syn),
+  col = "red",
+  lwd = 2
+)
+
+
+```
+
+## Comparaciones múltiples de SYN
+
+```{r}
+#| label: syn-tukey
+
+# Comparar concentraciones dentro de cada especie
+emm_syn <- emmeans::emmeans(
+  modelo_syn,
+  ~ concentraciones | especies
+)
+
+summary(pairs(emm_syn, adjust = "tukey"))
+
+# Letras minúsculas: concentraciones
+letras_syn <- multcomp::cld(
+  emm_syn,
+  Letters = letters
+) %>%
+  as.data.frame() %>%
+  dplyr::transmute(
+    especies,
+    concentraciones,
+    letra = trimws(.group)
+  )
+
+
+# Comparar especies dentro de cada concentración
+emm_esp_syn <- emmeans::emmeans(
+  modelo_syn,
+  ~ especies | concentraciones
+)
+
+# Ajuste de Holm para las cinco comparaciones
+comparaciones_esp_syn <- summary(
+  pairs(emm_esp_syn),
+  by = NULL,
+  adjust = "holm"
+) %>%
+  as.data.frame()
+
+knitr::kable(
+  comparaciones_esp_syn,
+  digits = 4,
+  caption = "Comparaciones entre especies con ajuste de Holm"
+)
+
+# Letras mayúsculas: especies
+letras_esp_syn <- as.data.frame(emm_esp_syn) %>%
+  dplyr::left_join(
+    comparaciones_esp_syn %>%
+      dplyr::select(concentraciones, p.value),
+    by = "concentraciones"
+  ) %>%
+  dplyr::group_by(concentraciones) %>%
+  dplyr::mutate(
+    letra_especie = dplyr::if_else(
+      p.value < 0.05 & emmean < max(emmean),
+      "B", "A"
+    )
+  ) %>%
+  dplyr::ungroup() %>%
+  dplyr::select(
+    especies, concentraciones, letra_especie
+  )
+
+# Tabla final de SYN
+tabla_syn <- resumen_germ %>%
+  dplyr::filter(concentraciones != "T5_100") %>%
+  dplyr::select(
+    especies, concentraciones,
+    syn_media, syn_sd, syn_ee
+  ) %>%
+  dplyr::left_join(
+    letras_syn,
+    by = c("especies", "concentraciones")
+  ) %>%
+  dplyr::left_join(
+    letras_esp_syn,
+    by = c("especies", "concentraciones")
+  ) %>%
+  dplyr::mutate(
+    etiqueta = paste0(letra, letra_especie)
+  ) %>%
+  dplyr::arrange(especies, concentraciones)
+
+knitr::kable(
+  tabla_syn,
+  digits = 3,
+  caption = "Sincronización de germinación y comparaciones múltiples"
+)
+
+```
+
+
+## Figura 2. Porcentaje de germinación (GRP)
+
+```{r}
+#| label: figura-2-grp
+#| fig-width: 9
+#| fig-height: 5.5
+
+datos_fig2 <- tabla_grp %>%
+  dplyr::mutate(
+    x = as.numeric(concentraciones) +
+      dplyr::if_else(especies == "rabanito", -0.12, 0.12),
+    y_letra = dplyr::case_when(
+      concentraciones == "T5_100" & especies == "rabanito" ~ 8,
+      concentraciones == "T5_100" & especies == "lechuga" ~ 16,
+      TRUE ~ grp_media + grp_ee + 5
+    )
+  )
+
+p_grp <- ggplot2::ggplot(
+  datos_fig2,
+  ggplot2::aes(
+    x = x,
+    y = grp_media,
+    color = especies,
+    shape = especies,
+    group = especies
+  )
+) +
+  ggplot2::geom_line(linewidth = 0.7) +
+  ggplot2::geom_errorbar(
+    ggplot2::aes(
+      ymin = pmax(0, grp_media - grp_ee),
+      ymax = pmin(100, grp_media + grp_ee)
+    ),
+    width = 0.08,
+    linewidth = 0.45
+  ) +
+  ggplot2::geom_point(size = 2.7) +
+  ggplot2::geom_text(
+    ggplot2::aes(
+      y = y_letra,
+      label = etiqueta
+    ),
+    color = "black",
+    size = 3.4,
+    show.legend = FALSE
+  ) +
+  ggplot2::scale_color_manual(
+    values = colores_especies,
+    labels = c(rabanito = "Rabanito", lechuga = "Lechuga")
+  ) +
+  ggplot2::scale_shape_manual(
+    values = formas_especies,
+    labels = c(rabanito = "Rabanito", lechuga = "Lechuga")
+  ) +
+  ggplot2::scale_x_continuous(
+    breaks = 1:6,
+    labels = etiquetas_dosis,
+    limits = c(0.6, 6.4)
+  ) +
+  ggplot2::scale_y_continuous(
+    breaks = seq(0, 100, 20)
+  ) +
+  ggplot2::coord_cartesian(ylim = c(0, 115)) +
+  ggplot2::labs(
+    x = "Concentración de agua residual (% v/v)",
+    y = "Germinabilidad (%)"
+  ) +
+  tema_figuras
+
+print(p_grp)
+
+```
+
+
+## Figura 3. Índices de germinación (MGT, GSP y SYN)
+
+```{r}
+
+#| label: figura-3-indices
+#| fig-width: 16
+#| fig-height: 8
+
+# Preparación de datos
+
+datos_fig_mgt <- tabla_mgt %>%
+  dplyr::mutate(
+    x = as.numeric(concentraciones) +
+      dplyr::if_else(especies == "rabanito", -0.07, 0.07),
+    y_letra = media + EE + 0.12
+  )
+
+datos_fig_gsp <- tabla_gsp %>%
+  dplyr::mutate(
+    x = as.numeric(concentraciones) +
+      dplyr::if_else(especies == "rabanito", -0.07, 0.07),
+    y_letra = gsp_media + gsp_ee + 4
+  )
+
+datos_fig_syn <- tabla_syn %>%
+  dplyr::mutate(
+    x = as.numeric(concentraciones) +
+      dplyr::if_else(especies == "rabanito", -0.07, 0.07),
+    y_letra = syn_media + syn_ee + 0.04
+  )
+
+# Etiquetas externas de los paneles
+
+tema_paneles <- tema_figuras +
+  ggplot2::theme(
+    plot.tag = ggplot2::element_text(
+      face = "bold",
+      size = 14
+    ),
+    plot.tag.position = "topleft",
+    plot.margin = ggplot2::margin(8, 8, 6, 6)
+  )
+
+# Panel a: MGT
+
+p_mgt <- ggplot2::ggplot(
+  datos_fig_mgt,
+  ggplot2::aes(
+    x = x, y = media,
+    color = especies, shape = especies,
+    group = especies
+  )
+) +
+  ggplot2::geom_line(linewidth = 0.7) +
+  ggplot2::geom_errorbar(
+    ggplot2::aes(
+      ymin = media - EE,
+      ymax = media + EE
+    ),
+    width = 0.08,
+    linewidth = 0.45
+  ) +
+  ggplot2::geom_point(size = 2.7) +
+  ggplot2::geom_text(
+    ggplot2::aes(y = y_letra, label = etiqueta),
+    color = "black",
+    size = 3.4,
+    show.legend = FALSE
+  ) +
+  ggplot2::scale_color_manual(
+    values = colores_especies,
+    labels = c(rabanito = "Rabanito", lechuga = "Lechuga")
+  ) +
+  ggplot2::scale_shape_manual(
+    values = formas_especies,
+    labels = c(rabanito = "Rabanito", lechuga = "Lechuga")
+  ) +
+  ggplot2::scale_x_continuous(
+    breaks = 1:5,
+    labels = etiquetas_dosis[1:5],
+    limits = c(0.6, 5.4)
+  ) +
+  ggplot2::scale_y_continuous(breaks = 0:4) +
+  ggplot2::coord_cartesian(ylim = c(0, 4.2)) +
+  ggplot2::labs(
+    x = NULL,
+    y = "Tiempo medio de germinación (días)",
+    tag = "a"
+  ) +
+  tema_paneles
+
+# Panel b: GSP
+
+p_gsp <- ggplot2::ggplot(
+  datos_fig_gsp,
+  ggplot2::aes(
+    x = x, y = gsp_media,
+    color = especies, shape = especies,
+    group = especies
+  )
+) +
+  ggplot2::geom_line(linewidth = 0.7) +
+  ggplot2::geom_errorbar(
+    ggplot2::aes(
+      ymin = gsp_media - gsp_ee,
+      ymax = gsp_media + gsp_ee
+    ),
+    width = 0.08,
+    linewidth = 0.45
+  ) +
+  ggplot2::geom_point(size = 2.7) +
+  ggplot2::geom_text(
+    ggplot2::aes(y = y_letra, label = etiqueta),
+    color = "black",
+    size = 3.4,
+    show.legend = FALSE
+  ) +
+  ggplot2::scale_color_manual(
+    values = colores_especies,
+    labels = c(rabanito = "Rabanito", lechuga = "Lechuga")
+  ) +
+  ggplot2::scale_shape_manual(
+    values = formas_especies,
+    labels = c(rabanito = "Rabanito", lechuga = "Lechuga")
+  ) +
+  ggplot2::scale_x_continuous(
+    breaks = 1:5,
+    labels = etiquetas_dosis[1:5],
+    limits = c(0.6, 5.4)
+  ) +
+  ggplot2::scale_y_continuous(
+    breaks = seq(0, 100, 20)
+  ) +
+  ggplot2::coord_cartesian(ylim = c(0, 115)) +
+  ggplot2::labs(
+    x = "Concentración de agua residual (% v/v)",
+    y = "Velocidad de germinación (100/MGT)",
+    tag = "b"
+  ) +
+  tema_paneles
+
+# Panel c: SYN
+
+p_syn <- ggplot2::ggplot(
+  datos_fig_syn,
+  ggplot2::aes(
+    x = x, y = syn_media,
+    color = especies, shape = especies,
+    group = especies
+  )
+) +
+  ggplot2::geom_line(linewidth = 0.7) +
+  ggplot2::geom_errorbar(
+    ggplot2::aes(
+      ymin = syn_media - syn_ee,
+      ymax = syn_media + syn_ee
+    ),
+    width = 0.08,
+    linewidth = 0.45
+  ) +
+  ggplot2::geom_point(size = 2.7) +
+  ggplot2::geom_text(
+    ggplot2::aes(y = y_letra, label = etiqueta),
+    color = "black",
+    size = 3.4,
+    show.legend = FALSE
+  ) +
+  ggplot2::scale_color_manual(
+    values = colores_especies,
+    labels = c(rabanito = "Rabanito", lechuga = "Lechuga")
+  ) +
+  ggplot2::scale_shape_manual(
+    values = formas_especies,
+    labels = c(rabanito = "Rabanito", lechuga = "Lechuga")
+  ) +
+  ggplot2::scale_x_continuous(
+    breaks = 1:5,
+    labels = etiquetas_dosis[1:5],
+    limits = c(0.6, 5.4)
+  ) +
+  ggplot2::scale_y_continuous(
+    breaks = seq(0, 1, 0.2)
+  ) +
+  ggplot2::coord_cartesian(ylim = c(0, 1.15)) +
+  ggplot2::labs(
+    x = NULL,
+    y = "Índice de sincronización",
+    tag = "c"
+  ) +
+  tema_paneles
+
+# Unir los tres paneles
+
+diseno_figura_3 <- "
+AAA
+BCD
+"
+
+figura_3 <- patchwork::guide_area() +
+  p_mgt + p_gsp + p_syn +
+  patchwork::plot_layout(
+    design = diseno_figura_3,
+    guides = "collect",
+    heights = c(0.06, 1)
+  ) &
+  ggplot2::theme(
+    legend.position = "top",
+    legend.title = ggplot2::element_blank()
+  )
+
+
+print(figura_3)
+
+
+
+```
+
+## Guardar las figuras
+
+```{r}
+
+#| label: exportar-figuras
+
+dir.create("figuras", showWarnings = FALSE)
+
+ggplot2::ggsave(
+  "figuras/Figura_2_GRP.png",
+  plot = p_grp,
+  width = 9,
+  height = 5.5,
+  dpi = 600
+)
+
+ggplot2::ggsave(
+  "figuras/Figura_3_indices.png",
+  plot = figura_3,
+  width = 16,
+  height = 8,
+  dpi = 600
+)
+
+
+```
+
+
+# Análisis de componentes principales (PCA)
+
+```{r}
+
+#| label: pca-analisis
+
+# Preparar datos de T0 a T4
+datos_pca <- dt %>%
+  dplyr::filter(concentraciones != "T5_100") %>%
+  dplyr::select(
+    plots, especies, concentraciones, rep,
+    grp, mgt, gsp, syn
+  ) %>%
+  tidyr::drop_na(grp, mgt, gsp, syn) %>%
+  droplevels()
+
+# Matriz de índices
+matriz_pca <- datos_pca %>%
+  dplyr::select(grp, mgt, gsp, syn) %>%
+  as.data.frame()
+
+# PCA
+modelo_pca <- FactoMineR::PCA(
+  matriz_pca,
+  scale.unit = TRUE,
+  ncp = 4,
+  graph = FALSE
+)
+
+# Varianza explicada
+knitr::kable(
+  as.data.frame(modelo_pca$eig),
+  digits = 3,
+  caption = "Varianza explicada por los componentes principales"
+)
+
+# Correlación entre índices
+knitr::kable(
+  round(cor(matriz_pca), 3),
+  caption = "Correlaciones entre índices de germinación"
+)
+
+# Coordenadas de los individuos
+ind_pca <- dplyr::bind_cols(
+  datos_pca %>%
+    dplyr::select(plots, especies, concentraciones, rep),
+  as.data.frame(modelo_pca$ind$coord[, 1:2])
+)
+
+names(ind_pca)[5:6] <- c("PC1", "PC2")
+
+cat("Unidades experimentales en el PCA:", nrow(ind_pca), "\n")
+
+```
+
+
+## Figura 4. PCA de variables e individuos
+
+```{r}
+#| label: figura-4-pca
+#| fig-width: 13
+#| fig-height: 7
+
+# Panel a: PCA de variables
+angulos <- seq(0, 2 * pi, length.out = 300)
+
+circulo <- data.frame(
+  x = cos(angulos),
+  y = sin(angulos)
+)
+
+variables_pca <- as.data.frame(
+  modelo_pca$var$cor[, 1:2]
+)
+
+names(variables_pca) <- c("PC1", "PC2")
+variables_pca$indice <- toupper(rownames(variables_pca))
+
+p_pca_vars <- ggplot2::ggplot() +
+  ggplot2::geom_path(
+    data = circulo,
+    ggplot2::aes(x = x, y = y),
+    linewidth = 0.6
+  ) +
+  ggplot2::geom_hline(
+    yintercept = 0,
+    linetype = "dashed",
+    linewidth = 0.35
+  ) +
+  ggplot2::geom_vline(
+    xintercept = 0,
+    linetype = "dashed",
+    linewidth = 0.35
+  ) +
+  ggplot2::geom_segment(
+    data = variables_pca,
+    ggplot2::aes(
+      x = 0, y = 0,
+      xend = PC1, yend = PC2
+    ),
+    linewidth = 0.55,
+    arrow = grid::arrow(
+      length = grid::unit(0.17, "cm")
+    )
+  ) +
+  ggplot2::geom_text(
+    data = variables_pca,
+    ggplot2::aes(
+      x = PC1 * 1.12,
+      y = PC2 * 1.12,
+      label = indice
+    ),
+    size = 3.5
+  ) +
+  ggplot2::coord_fixed(
+    xlim = c(-1.2, 1.2),
+    ylim = c(-1.2, 1.2)
+  ) +
+  ggplot2::labs(
+    x = paste0(
+      "Dim 1 (",
+      round(modelo_pca$eig[1, 2], 1), "%)"
+    ),
+    y = paste0(
+      "Dim 2 (",
+      round(modelo_pca$eig[2, 2], 1), "%)"
+    ),
+    title = "PCA de variables",
+    tag = "a"
+  ) +
+  tema_figuras +
+  ggplot2::theme(
+    plot.title = ggplot2::element_text(
+      face = "bold", hjust = 0.5
+    ),
+    plot.tag = ggplot2::element_text(
+      face = "bold", size = 14
+    ),
+    # antes estaba muy separado
+    plot.tag.position = c(0.01, 0.99),
+    plot.margin = ggplot2::margin(5.5, 8, 5.5, 5.5),
+    legend.position = "none"
+  )
+
+
+# Panel b: PCA de individuos
+colores_dosis_pca <- c(
+  "T0_0"    = "#CE8A88",
+  "T1_1.25" = "#377EB8",
+  "T2_2.5"  = "#3E9A65",
+  "T3_5"    = "#8D67A8",
+  "T4_10"   = "#D55243"
+)
+
+# límites
+x_min <- min(ind_pca$PC1)
+x_max <- max(ind_pca$PC1)
+y_min <- min(ind_pca$PC2)
+y_max <- max(ind_pca$PC2)
+
+# mover la leyenda interna más a la derecha
+x_leyenda <- x_max - 0.10
+y_leyenda <- y_max - 0.15
+
+p_pca_ind <- ggplot2::ggplot(
+  ind_pca,
+  ggplot2::aes(
+    x = PC1,
+    y = PC2,
+    color = concentraciones,
+    shape = especies
+  )
+) +
+  ggplot2::geom_hline(
+    yintercept = 0,
+    linetype = "dashed",
+    linewidth = 0.35
+  ) +
+  ggplot2::geom_vline(
+    xintercept = 0,
+    linetype = "dashed",
+    linewidth = 0.35
+  ) +
+  ggplot2::geom_point(
+    size = 2.8,
+    alpha = 0.95
+  ) +
+  ggplot2::scale_color_manual(
+    name = "Concentración",
+    values = colores_dosis_pca,
+    breaks = names(colores_dosis_pca),
+    labels = paste0(etiquetas_dosis[1:5], " %")
+  ) +
+  ggplot2::scale_shape_manual(
+    values = formas_especies
+  ) +
+  ggplot2::guides(
+    color = ggplot2::guide_legend(
+      order = 1,
+      nrow = 1,
+      override.aes = list(
+        shape = 16,
+        size = 3
+      )
+    ),
+    shape = "none"
+  ) +
+  ggplot2::coord_cartesian(
+    xlim = c(x_min - 0.2, x_max + 0.9),
+    ylim = c(y_min - 0.1, y_max + 0.2),
+    clip = "off"
+  ) +
+  ggplot2::labs(
+    x = paste0(
+      "Dim 1 (",
+      round(modelo_pca$eig[1, 2], 1), "%)"
+    ),
+    y = paste0(
+      "Dim 2 (",
+      round(modelo_pca$eig[2, 2], 1), "%)"
+    ),
+    title = "PCA de individuos",
+    tag = "b"
+  ) +
+  tema_figuras +
+  ggplot2::theme(
+    plot.title = ggplot2::element_text(
+      face = "bold", hjust = 0.5
+    ),
+    plot.tag = ggplot2::element_text(
+      face = "bold", size = 14
+    ),
+    plot.tag.position = c(0.01, 0.99),
+    panel.grid.major.y = ggplot2::element_blank(),
+    legend.position = "bottom",
+    legend.title = ggplot2::element_text(size = 10),
+    plot.margin = ggplot2::margin(5.5, 18, 5.5, 5.5)
+  ) +
+
+  # Leyenda interna de especies
+  ggplot2::annotate(
+    "text",
+    x = x_leyenda, y = y_leyenda,
+    label = "Especie",
+    hjust = 0, fontface = "bold", size = 3.7
+  ) +
+  ggplot2::annotate(
+    "point",
+    x = x_leyenda + 0.05, y = y_leyenda - 0.27,
+    shape = 16, size = 2.8, color = "#333333"
+  ) +
+  ggplot2::annotate(
+    "text",
+    x = x_leyenda + 0.23, y = y_leyenda - 0.27,
+    label = "Rabanito",
+    hjust = 0, size = 3.4
+  ) +
+  ggplot2::annotate(
+    "point",
+    x = x_leyenda + 0.05, y = y_leyenda - 0.54,
+    shape = 17, size = 2.8, color = "#333333"
+  ) +
+  ggplot2::annotate(
+    "text",
+    x = x_leyenda + 0.23, y = y_leyenda - 0.54,
+    label = "Lechuga",
+    hjust = 0, size = 3.4
+  )
+
+
+# Combinar paneles
+figura_4 <- (p_pca_vars | p_pca_ind) +
+  patchwork::plot_layout(
+    widths = c(1, 1)
+  )
+
+print(figura_4)
+```
+
+## Guardar la Figura 4
+
+```{r}
+
+#| label: exportar-pca
+
+ggplot2::ggsave(
+  "figuras/Figura_4_PCA.png",
+  plot = figura_4,
+  width = 13,
+  height = 7,
+  dpi = 600
+)
+
+```
+
+- Gráfico a: muestra que la velocidad y la sincronización están relacionadas. Es decir, cuando las semillas germinan más rápido, también tienden a hacerlo de manera más sincronizada. Por otro lado, cuando tardan más en germinar, disminuyen la velocidad y la sincronización.
+- Gráfico b: muestra cómo se distribuyen las repeticiones de rabanito y lechuga. Observamos que la lechuga se encuentra principalmente hacia la derecha, relacionada con una germinación más rápida y sincronizada. El rabanito aparece principalmente hacia la izquierda, asociado con mayores tiempos de germinación. Esto se nota especialmente en algunas repeticiones del tratamiento al 10 %.
+Lo más importante: el PCA muestra que la lechuga tuvo, generalmente, una germinación más rápida y sincronizada que el rabanito, mientras que las concentraciones más altas afectaron el comportamiento germinativo, especialmente en rabanito.
+
+# Interpretacíon
+
+## Figura 1. Curvas de germinación acumulada
+
+La Figura 1 muestra la evolución de la germinación acumulada del rabanito y la lechuga durante los siete días de evaluación. En el rabanito se observó que, a medida que aumentó la concentración de agua residual, la germinación fue más lenta y alcanzó menores porcentajes finales. Este comportamiento fue más evidente en el tratamiento al 10 %, donde la germinación se retrasó considerablemente y alcanzó un 85 % al séptimo día. En cambio, la lechuga presentó una germinación más rápida en las concentraciones menores, alcanzando porcentajes cercanos al 100 % durante los primeros días. Aunque el tratamiento al 10 % retrasó su germinación, al finalizar la evaluación alcanzó un 99 %. En ambas especies, la concentración del 100 % inhibió completamente la germinación durante todo el periodo experimental. Estos resultados muestran que el agua residual afectó principalmente la rapidez de germinación en las concentraciones de 0 a 10 %, mientras que su aplicación sin diluir impidió la germinación de ambas especies.
+
+## Figura 2. Porcentaje final de germinación (GRP)
+
+La Figura 2 presenta los porcentajes finales de germinación de ambas especies frente a las diferentes concentraciones de agua residual. En el rabanito, la germinabilidad disminuyó progresivamente desde el 100 % en el tratamiento control hasta el 85 % en la concentración del 10 %. Por su parte, la lechuga mantuvo porcentajes elevados, entre el 98 % y 99 %, en las concentraciones de 0 a 10 %. Sin embargo, las comparaciones de Tukey no identificaron diferencias significativas entre estas cinco concentraciones dentro de cada especie. La concentración del 100 % produjo una inhibición completa y fue significativamente diferente de todos los demás tratamientos. Asimismo, al comparar ambas especies, se encontró una diferencia significativa en la concentración del 10 % (p ajustado = 0,0261), donde la lechuga presentó mayor germinabilidad que el rabanito. Estos resultados indican que ambas especies mantuvieron una elevada capacidad germinativa en las concentraciones diluidas, aunque el rabanito mostró una mayor reducción del porcentaje final al 10 %.
+
+## Figura 3. Tiempo medio, velocidad y sincronización de la germinación
+
+**Panel a. Tiempo medio de germinación (MGT).** Se observó un incremento del tiempo necesario para germinar conforme aumentó la concentración de agua residual. En el rabanito, el MGT pasó de 1,54 días en el tratamiento control a 3,18 días en la concentración del 10 %, mientras que en la lechuga aumentó de 1,14 a 2,03 días. El análisis estadístico mostró una interacción significativa entre especie y concentración (p = 0,000332), lo que indica que ambas especies respondieron de manera diferente al incremento de la concentración. El rabanito presentó mayores tiempos de germinación que la lechuga en todos los tratamientos evaluados.
+
+**Panel b. Velocidad de germinación (GSP).** La velocidad de germinación disminuyó conforme aumentó la concentración de agua residual, especialmente a partir del 5 %. En el tratamiento al 10 %, el rabanito presentó una velocidad de 31,59, mientras que la lechuga alcanzó 49,30. El análisis estadístico identificó efectos significativos de la especie y la concentración, pero no de su interacción. Esto indica que la lechuga mantuvo una mayor velocidad de germinación y que las concentraciones más elevadas redujeron este índice en ambas especies.
+
+**Panel c. Sincronización de la germinación (SYN).** La sincronización disminuyó con el incremento de la concentración de agua residual. En el rabanito, el índice pasó de 0,431 en el tratamiento control a 0,235 en la concentración del 10 %. En la lechuga, disminuyó de 0,882 a 0,340. Estos resultados indican que, a mayores concentraciones, la germinación ocurrió de manera menos uniforme entre las semillas. Se encontró una interacción significativa entre especie y concentración (p < 0,0001), lo que demuestra que la magnitud de esta respuesta fue diferente entre ambas especies. La lechuga presentó mayor sincronización que el rabanito en todas las concentraciones evaluadas.
+
+## Figura 4. Análisis de componentes principales (PCA)
+
+La Figura 4 muestra las relaciones entre los índices de germinación y la distribución de las unidades experimentales según la especie y la concentración de agua residual. Las dos primeras dimensiones del PCA explicaron el 96,7 % de la variabilidad total, lo que indica que representan gran parte de la información de los índices evaluados.
+
+En el **panel a**, se observa una relación positiva entre la velocidad (GSP) y la sincronización de la germinación (SYN), mientras que el tiempo medio de germinación (MGT) presenta una relación negativa con ambas variables. Esto significa que las semillas que germinaron más rápidamente también tendieron a hacerlo de manera más sincronizada, mientras que aquellas que necesitaron más tiempo presentaron menor velocidad y sincronización.
+
+En el **panel b**, las unidades experimentales muestran una distribución diferenciada principalmente por especie. La lechuga se ubica mayormente hacia el lado positivo de la primera dimensión, asociado con mayor velocidad y sincronización, mientras que el rabanito se concentra principalmente hacia el lado negativo, relacionado con mayores tiempos de germinación. Esta diferencia fue especialmente evidente en algunas repeticiones de rabanito expuestas al 10 %, que presentaron las posiciones más extremas. Estos resultados permiten visualizar las diferencias en el comportamiento germinativo de ambas especies y complementan los análisis estadísticos realizados.
+
+
+
+
+
